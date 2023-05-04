@@ -1,0 +1,226 @@
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zotc_a.
+
+
+TABLES: adrc, vbak, vbap, kna1, vbuk.
+
+PARAMETERS: kunnr TYPE vbak-kunnr DEFAULT '5000000030'.
+
+TYPES: BEGIN OF ts_table,
+         mandt       TYPE mandt,
+         vbeln       TYPE vbeln,
+         ernam       TYPE ernam,
+         erdat       TYPE erdat,
+         vkorg       TYPE vkorg,
+         vtweg       TYPE vtweg,
+         spart       TYPE spart,
+         kunnr       TYPE kunnr,
+         name1       TYPE name1,
+         stras       TYPE stras,
+         hausnummer  TYPE string,
+         pstlz       TYPE pstlz,
+         ort01       TYPE ort01,
+         anz_pos     TYPE i,
+         anz_off_pos TYPE i,
+         gbstk       TYPE gbstk,
+       END OF ts_table.
+
+DATA: gt_table TYPE TABLE OF ts_table,
+      gs_table TYPE ts_table.
+DATA: gv_total_pos  TYPE i,
+      gv_offene_pos TYPE i.
+
+
+DATA: lt_vbfa TYPE TABLE OF vbfas.
+DATA: it_vbfa TYPE STANDARD TABLE OF vbfa WITH DEFAULT KEY.
+
+
+
+*----------------------------------------------------------------------*
+*       CLASS cl_handler DEFINITION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+
+
+SELECT-OPTIONS: s_kunnr FOR gs_table-kunnr,
+                s_erdat FOR gs_table-erdat,
+                s_vbeln FOR gs_table-vbeln,
+                s_GBSTK FOR gs_table-gbstk.
+
+
+* Defintion eines event handlers
+CLASS go_events DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS on_double_click
+      FOR EVENT if_salv_events_actions_table~double_click
+      OF cl_salv_events_table
+      IMPORTING row
+                column.
+
+    CLASS-METHODS on_link_click
+      FOR EVENT if_salv_events_actions_table~link_click
+      OF cl_salv_events_table
+      IMPORTING row
+                column.
+
+  PRIVATE SECTION.
+    DATA go_salv TYPE REF TO object.
+
+ENDCLASS.
+
+
+CLASS go_events IMPLEMENTATION.
+
+  METHOD on_double_click.
+    DATA: ls_vbak TYPE vbak.
+*    READ TABLE gt_table INTO ls_vbak INDEX row.
+    SET PARAMETER ID 'DTB' FIELD ls_vbak-erdat.
+    CALL TRANSACTION 'SE11' WITHOUT AUTHORITY-CHECK.
+  ENDMETHOD.
+
+  METHOD on_link_click.
+    DATA: ls_vbak TYPE vbak.
+*    READ TABLE gt_table INTO ls_vbak INDEX row.
+    MESSAGE | { row }, { column }, { ls_vbak-vbeln } | TYPE 'I'.
+  ENDMETHOD.
+ENDCLASS.
+
+
+
+START-OF-SELECTION.
+
+  AUTHORITY-CHECK OBJECT 'S_TCODE'
+    ID 'TCD' FIELD 'ZOTC_A'.
+  IF sy-subrc <> 0.
+    MESSAGE 'Keine ausreichende Berechtigung' TYPE 'E'.
+  ELSE.
+  ENDIF.
+
+
+
+  SELECT  mandt vbeln ernam erdat vkorg vtweg spart kunnr gbstk
+  FROM vbak
+  INTO CORRESPONDING FIELDS OF TABLE gt_table
+  WHERE kunnr IN s_kunnr
+  AND erdat IN s_erdat
+  AND vbeln IN s_vbeln
+  AND gbstk IN s_gbstk
+  AND vbtyp = 'C'. " Kundenaufträge
+
+
+  IF gt_table IS NOT INITIAL.
+    SELECT * FROM kna1
+    INTO TABLE @DATA(gt_kna1)
+    FOR ALL ENTRIES IN @gt_table
+    WHERE kunnr EQ @gt_table-kunnr.
+  ENDIF.
+
+  LOOP AT gt_table ASSIGNING FIELD-SYMBOL(<fs_table>).
+    READ TABLE gt_kna1 WITH KEY kunnr = <fs_table>-kunnr INTO DATA(gs_kna1).
+    IF sy-subrc IS INITIAL.
+      ASSIGN COMPONENT 'MANDT' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_mandt>).
+      <fs_mandt> = gs_kna1-mandt.
+
+      ASSIGN COMPONENT 'NAME1' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_name1>).
+      <fs_name1> = gs_kna1-name1.
+
+      ASSIGN COMPONENT 'STRAS' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_stras>).
+      <fs_stras> = gs_kna1-stras.
+
+      ASSIGN COMPONENT 'PSTLZ' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_pstlz>).
+      <fs_pstlz> = gs_kna1-pstlz.
+
+      ASSIGN COMPONENT 'ORT01' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_ort01>).
+      <fs_ort01> = gs_kna1-ort01.
+
+    ENDIF.
+  ENDLOOP.
+
+  DATA: pos_new  TYPE i VALUE 0,
+        conviert TYPE c.
+
+  TRY.
+
+      DATA: go_salv    TYPE REF TO cl_salv_table,
+            go_events  TYPE REF TO cl_salv_events_table,
+            go_column  TYPE REF TO cl_salv_column, " Variable for layout settings
+            gt_display TYPE REF TO cl_salv_display_settings,
+            go_column1 TYPE REF TO cl_salv_column.
+
+
+      LOOP AT gt_table ASSIGNING FIELD-SYMBOL(<ls>).
+        DATA(lt_stras) = VALUE stringtab( ).
+        SPLIT <ls>-stras AT space INTO TABLE lt_stras.
+        <ls>-hausnummer = lt_stras[ 1 ].
+        CLEAR <ls>-stras.
+        IF lines( lt_stras ) > 1.
+          <ls>-stras = lt_stras[ 2 ] && space.
+          LOOP AT lt_stras FROM 4 INTO DATA(lv_str) .
+            <ls>-stras = <ls>-stras && space && lv_str .
+          ENDLOOP.
+          <ls>-stras = COND #( WHEN <ls>-stras IS NOT INITIAL THEN
+                                  |{ <ls>-stras }|
+                                ELSE
+                                  lt_stras[ lines( lt_stras ) ] ).
+        ELSE.
+          <ls>-stras = lt_stras[ 1 ].
+        ENDIF.
+      ENDLOOP.
+
+
+      CALL METHOD cl_salv_table=>factory
+        IMPORTING
+          r_salv_table = go_salv
+        CHANGING
+          t_table      = gt_table.
+
+      go_events = go_salv->get_event( ).
+      SET HANDLER go_events=>on_double_click FOR go_events.
+      SET HANDLER go_events=>on_link_click FOR go_events.
+      gt_display = go_salv->get_display_settings( ).
+
+      DATA(go_col) = CAST cl_salv_column_table( go_salv->get_columns( )->get_column( 'ERDAT' ) ).
+      go_col->set_cell_type( if_salv_c_cell_type=>hotspot ).
+
+
+*das ist eine methode alle funtionen zu setzen, und dann einige inaktive zu setzten
+      go_salv->get_functions( )->set_all( abap_true ).
+      go_salv->get_columns( )->set_optimize( abap_true ).
+      go_salv->get_functions( )->set_export_mail( abap_false ).
+* das ist eine Methode die funtionenen einzel zu setzen
+      go_salv->get_functions( )->set_sort_asc( abap_true ).
+      go_salv->get_functions( )->set_sort_desc( abap_true ).
+
+
+      LOOP AT gt_table INTO gs_table.
+        SELECT COUNT( * )
+        INTO gv_total_pos
+        FROM vbap
+        WHERE vbeln = gs_table-vbeln.
+
+        gs_table-anz_pos = gv_total_pos.
+
+        MODIFY gt_table FROM gs_table INDEX sy-tabix.
+        ENDLOOP.
+
+        go_column = go_salv->get_columns(  )->get_column( 'ANZ_POS' ).  " Spaltenname 'ANZ_POS' anpassen
+        go_column->set_long_text( 'Anzahl Positionen' ).               " Text für Long-Text setzen
+
+
+        go_column = go_salv->get_columns(  )->get_column( 'HAUSNUMMER' ).  " Spaltenname 'ANZ_POS' anpassen
+        go_column->set_long_text( 'hausnummer' ).
+
+
+
+        go_salv->display( ).
+
+
+      CATCH cx_salv_msg INTO DATA(lx_msg).
+        MESSAGE lx_msg TYPE 'E'.
+      CATCH cx_salv_not_found INTO DATA(lx_salv_not_found).
+        WRITE: 'Fehler: ALV Gr
